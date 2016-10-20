@@ -21,50 +21,34 @@
 
 		<ul class="nav nav-tabs" role="tablist">
 			<li class="active"><a href="#create" role="tab" data-toggle="tab">Create User</a></li>
-			<li class="active"><a href="#login" role="tab" data-toggle="tab">Login User</a></li>
 		</ul>
 
 
 		<div class="tab-content">
 			<div class="tab-pane active" id="create">
-
+			<form onsubmit="return false;">
 			<div class="form-group">
 			<label for="createEmail">Email</label>
-			<input type="text" class="form-control" id="createEmail" placeholder="Enter email">
+			<input type="text" class="form-control" name="email" id="createEmail" placeholder="Enter email">
 			</div>
 			<div class="form-group">
 			<label for="createUsername">Username</label>
-			<input type="text" class="form-control" id="createUsername" placeholder="Enter username">
+			<input type="text" class="form-control" name="user" id="createUsername" placeholder="Enter username">
 			</div>
 			<div class="form-group">
 			<label for="createFirst">First Name</label>
-			<input type="text" class="form-control" id="createFirst" placeholder="First Name">
+			<input type="text" class="form-control" name="first" id="createFirst" placeholder="First Name">
 			</div>
 			<div class="form-group">
 			<label for="createLast">Last Name</label>
-			<input type="text" class="form-control" id="createLast" placeholder="Last Name">
+			<input type="text" class="form-control" name="last" id="createLast" placeholder="Last Name">
 			</div>
-
+			<div class="form-group">
+			<label for="createLast">Image</label>
+			<input type="file" class="form-control" name="image" id="createImage" placeholder="Image">
+			</div>
 			<button type="submit" onclick="userCreate();" class="btn btn-success">Create</button>
-			</div>
-
-			<div class="tab-pane active" id="login">
-
-			<div class="form-group">
-			<label for="createEmail">Email</label>
-			<input type="text" class="form-control" id="createEmail" placeholder="Enter email">
-			</div>
-			<div class="form-group">
-			<label for="createUsername">Username</label>
-			<input type="text" class="form-control" id="createUsername" placeholder="Enter username">
-			</div>
-			<div class="form-group">
-			<label for="createUsername">Password</label>
-			<input type="text" class="form-control" id="loginPassword" placeholder="Your password">
-			</div>
-
-			<button type="submit" onclick="userCreate();" class="btn btn-success">Create</button>
-
+			</form>
 			</div>
 
 		</div>
@@ -83,12 +67,29 @@
 		postData.first 	= $('#createFirst').val();
 		postData.last 	= $('#createLast').val();
 
-		$.post(action,postData,function(data) {
-			if (data.error) {
-				$('.alert').html(data.error);
-				$('.alert').alert();
-			}
-		},'json');
+		var formData = new FormData($('form')[0]);
+		$.ajax({
+
+				url: action,
+				type: 'POST',
+				xhr: function() {
+					var myXhr = $.ajaxSettings.xhr();
+					if(myXhr.upload){
+					}
+					return myXhr;
+				},
+				//Ajax events
+				beforeSend: function() {},
+				success: function() { alert ('yay'); },
+				error: function() {},
+				// Form data
+				data: formData,
+				//Options to tell jQuery not to process data or worry about content-type.
+				cache: false,
+				contentType: false,
+				processData: false
+			});
+
 	}
 
 	$(document).ready(function() {
