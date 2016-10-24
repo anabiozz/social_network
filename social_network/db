@@ -23,4 +23,4 @@ index from_user_id_to_user_id_users_relationship_type(from_user_id, to_user_id, 
 --explicit_defaults_for_timestamp
 
 #send POST request
-curl http://localhost:8080/api/users --data "name=almex&email=almex@gmail.com&first=alex&last=bezrukov"
+curl http://localhost:8080/api/users --data "user=almex&email=almex@gmail.com&first=alex&last=bezrukov"

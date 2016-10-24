@@ -3,17 +3,49 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
-	//"io/ioutil"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 )
 
-var database *sql.DB
+var Database *sql.DB
+
+var Routes *mux.Router
+var Format string
+
+type Count struct {
+	DBCount int
+}
+
+func GetFormat(r *http.Request) {
+
+	if len(r.URL.Query()["format"]) > 0 {
+		Format = r.URL.Query()["format"][0]
+	} else {
+		Format = "json"
+	}
+}
+
+func SetFormat(data interface{}) []byte {
+
+	var apiOutput []byte
+	if Format == "json" {
+		output, _ := json.Marshal(data)
+		apiOutput = output
+	} else if Format == "xml" {
+		output, _ := xml.Marshal(data)
+		apiOutput = output
+	} else {
+		output, _ := json.Marshal(data)
+		apiOutput = output
+	}
+	return apiOutput
+}
 
 func ErrorMessages(err int64) (int, int, string) {
 	errorMessage := ""
@@ -21,13 +53,16 @@ func ErrorMessages(err int64) (int, int, string) {
 	errorCode := 0
 	switch err {
 	case 1062:
-		errorMessage = "Duplicate entry"
+		errorMessage = http.StatusText(409)
 		errorCode = 10
 		statusCode = http.StatusConflict
+	default:
+		errorMessage = http.StatusText(int(err))
+		errorCode = 0
+		statusCode = int(err)
 	}
 
 	return errorCode, statusCode, errorMessage
-
 }
 
 type Users struct {
@@ -42,7 +77,19 @@ type User struct {
 	Last  string "json:last"
 }
 
+func Init() {
+	Routes = mux.NewRouter()
+	Routes.HandleFunc("/api/users", UserCreate).Methods("POST")
+	Routes.HandleFunc("/api/users", UsersRetrieve).Methods("GET")
+	Routes.HandleFunc("/api/users/{id:[0-9]+}", UsersUpdate).Methods("PUT")
+}
+
 type CreateResponse struct {
+	Error     string "json:error"
+	ErrorCode int    "json:code"
+}
+
+type UpdateResponse struct {
 	Error     string "json:error"
 	ErrorCode int    "json:code"
 }
@@ -55,10 +102,6 @@ func dbErrorParse(err string) (string, int64) {
 	return errorMessage, errorCode
 }
 
-func eat(f string) {
-
-}
-
 func UserCreate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "http://localhost:9000")
 	NewUser := User{}
@@ -67,14 +110,6 @@ func UserCreate(w http.ResponseWriter, r *http.Request) {
 	NewUser.First = r.FormValue("first")
 	NewUser.Last = r.FormValue("last")
 
-	/*f, _, err := r.FormFile("image1")
-	if err != nil {
-		fmt.Println(err.Error())
-	}
-	fileData, _ := ioutil.ReadAll(f)
-	fileString := string(fileData)
-	eat(fileString)
-	*/
 	output, err := json.Marshal(NewUser)
 	fmt.Println(string(output))
 	if err != nil {
@@ -83,9 +118,8 @@ func UserCreate(w http.ResponseWriter, r *http.Request) {
 
 	Response := CreateResponse{}
 	// Note: This represents a SQL injection vulnerability ... keep reading!
-	//user_image='" + fileString + "',
 	sql := "INSERT INTO users set user_nickname='" + NewUser.Name + "', user_first='" + NewUser.First + "', user_last='" + NewUser.Last + "', user_email='" + NewUser.Email + "'"
-	q, err := database.Exec(sql)
+	q, err := Database.Exec(sql)
 	if err != nil {
 		errorMessage, errorCode := dbErrorParse(err.Error())
 		fmt.Println(errorMessage)
@@ -100,7 +134,8 @@ func UserCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func UsersRetrieve(w http.ResponseWriter, r *http.Request) {
-	log.Println("starting retrieval")
+	log.Println("Starting retrieval")
+	GetFormat(r)
 	start := 0
 	limit := 10
 
@@ -109,57 +144,67 @@ func UsersRetrieve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Link", "<http://localhost:8080/api/users?start="+string(next)+"; rel=\"next\"")
 
-	rows, _ := database.Query("select * from users LIMIT 10")
+	rows, _ := Database.Query("select user_id, user_nickname, user_first, user_last, user_email from users LIMIT 10")
 	Response := Users{}
 
 	for rows.Next() {
-
 		user := User{}
 		rows.Scan(&user.ID, &user.Name, &user.First, &user.Last, &user.Email)
-
+		fmt.Println(user)
 		Response.Users = append(Response.Users, user)
 	}
 
-	output, _ := json.Marshal(Response)
-
+	output := SetFormat(Response)
 	fmt.Fprintln(w, string(output))
 }
 
-func UsersRetrive(w http.ResponseWriter, r *http.Request) {
-	log.Println("starting retrieval")
-	start := 0
-	limit := 10
+func UsersUpdate(w http.ResponseWriter, r *http.Request) {
+	Response := UpdateResponse{}
+	params := mux.Vars(r)
+	uid := params["id"]
+	email := r.FormValue("email")
 
-	next := start + limit
+	var userCount int
 
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Link", "<http://localhost:8080/api/users?start="+string(next)+"; rel=\"next\"")
+	err := Database.QueryRow("SELECT count(user_id) from users where user_id=?", uid).Scan(&userCount)
+	if userCount == 0 {
+		error, httpCode, msg := ErrorMessages(404)
+		log.Println(error)
+		log.Println(w, msg, httpCode)
+		Response.Error = msg
+		Response.ErrorCode = httpCode
+		http.Error(w, msg, httpCode)
 
-	rows, _ := database.Query("select * from users LIMIT 10")
-	Responce := Users{}
+	} else if err != nil {
 
-	for rows.Next() {
-		user := User{}
-		rows.Scan(&user.ID, &user.Name, &user.First, &user.Last, &user.Email)
-		Responce.Users = append(Responce.Users, user)
+	} else {
+		_, uperr := Database.Exec("UPDATE users set user_email=? where user_id=?", email, uid)
+		if uperr != nil {
+			_, errorCode := dbErrorParse(uperr.Error())
+			_, httpCode, msg := ErrorMessages(errorCode)
+
+			Response.Error = msg
+			Response.ErrorCode = httpCode
+			http.Error(w, msg, httpCode)
+		} else {
+			Response.Error = "success"
+			Response.ErrorCode = 0
+			output := SetFormat(Response)
+			fmt.Fprintln(w, string(output))
+		}
 	}
-	output, _ := json.Marshal(Responce)
-	fmt.Fprintln(w, string(output))
 }
 
-//{key:[A-Za-z0-9\-]
 func main() {
 	db, err := sql.Open("mysql", "root:Almera103@/social_network")
 	if err != nil {
 
 	}
-	database = db
-	routes := mux.NewRouter()
-	routes.HandleFunc("/api/users", UserCreate).Methods("POST")
-	routes.HandleFunc("/api/users", UsersRetrive).Methods("GET")
-	http.Handle("/", routes)
-	/*http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "interface-update.html")
-	})*/
+	Database = db
+	Routes = mux.NewRouter()
+	Routes.HandleFunc("/api/users", UserCreate).Methods("POST")
+	Routes.HandleFunc("/api/users", UsersRetrieve).Methods("GET")
+	Routes.HandleFunc("/api/users/{id:[0-9]+}", UsersUpdate).Methods("PUT")
+	http.Handle("/", Routes)
 	http.ListenAndServe(":8080", nil)
 }
