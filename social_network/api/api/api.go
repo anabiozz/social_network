@@ -7,31 +7,182 @@ import (
 	"fmt"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
+	"github.com/gorilla/sessions"
+	"github.com/kabukky/httpscerts"
+
 	"log"
 	"net/http"
+	//"net/url"
+
 	"strconv"
 	"strings"
-	"sync"
 
-	Documentation "social_network/api/specification"
+	Password "social_network/api/password"
+
+	"sync"
+	"time"
 )
 
 var Database *sql.DB
-
 var Routes *mux.Router
 var Format string
+
+type UserSession struct {
+	ID              string
+	GorillaSesssion *sessions.Session
+	UID             int
+	Expire          time.Time
+}
+
+var Session UserSession
+
+func (us *UserSession) Create() {
+	us.ID = Password.GenerateSessionID(32)
+}
+
+const serverName = "127.0.0.1"
+const SSLport = ":8081"
+const HTTPport = ":8080"
+const SSLprotocol = "https://"
+const HTTPprotocol = "http://"
+
+var PermittedDomains []string
 
 type Count struct {
 	DBCount int
 }
 
-const (
-	serverName   = "localhost"
-	SSLport      = ":443"
-	HTTPport     = ":8080"
-	SSLprotocol  = "https://"
-	HTTPprotocol = "http://"
-)
+type UpdateResponse struct {
+	Error     string "json:error"
+	ErrorCode int    "json:code"
+}
+
+type CreateResponse struct {
+	Error     string "json:error"
+	ErrorCode int    "json:code"
+}
+
+type Users struct {
+	Users []User `json:"users"`
+}
+
+type User struct {
+	ID       int    "json:id"
+	Name     string "json:username"
+	Email    string "json:email"
+	First    string "json:first"
+	Last     string "json:last"
+	Password string "json:password"
+	Salt     string "json:salt"
+	Hash     string "json:hash"
+}
+
+type UserDocumentation struct {
+}
+
+type OauthAccessResponse struct {
+	AccessToken string `json:"access_key"`
+}
+
+type Page struct {
+	Title        string
+	Authorize    bool
+	Authenticate bool
+	Application  string
+	Action       string
+	ConsumerKey  string
+	Redirect     string
+	PageType     string
+}
+
+func Init(allowedDomains []string) {
+	for _, domain := range allowedDomains {
+		PermittedDomains = append(PermittedDomains, domain)
+	}
+	Routes = mux.NewRouter()
+	Routes.HandleFunc("/interface", APIInterface).Methods("GET", "POST", "PUT", "UPDATE")
+	Routes.HandleFunc("/api/users", UserCreate).Methods("POST")
+	Routes.HandleFunc("/api/users", UsersRetrieve).Methods("GET")
+	Routes.HandleFunc("/api/users/{id:[0-9]+}", UsersUpdate).Methods("PUT")
+	Routes.HandleFunc("/api/users", UsersInfo).Methods("OPTIONS")
+	Routes.HandleFunc("/api/statuses", StatusCreate).Methods("POST")
+	Routes.HandleFunc("/api/statuses", StatusRetrieve).Methods("GET")
+	Routes.HandleFunc("/api/statuses/{id:[0-9]+}", StatusUpdate).Methods("PUT")
+	Routes.HandleFunc("/api/statuses/{id:[0-9]+}", StatusDelete).Methods("DELETE")
+	Routes.HandleFunc("/authorize", ApplicationAuthorize).Methods("POST")
+	Routes.HandleFunc("/authorize", ApplicationAuthenticate).Methods("GET")
+	//Routes.HandleFunc("/authorize/{service:[a-z]+}", ServiceAuthorize).Methods("GET")
+	Routes.HandleFunc("/connect/{service:[a-z]+}", ServiceConnect).Methods("GET")
+	Routes.HandleFunc("/oauth/token", CheckCredentials).Methods("POST")
+}
+
+func CheckLogin(w http.ResponseWriter, r *http.Request) bool {
+	cookieSession, err := r.Cookie("sessionid")
+	if err != nil {
+		fmt.Println("no such cookie")
+		Session.Create()
+		fmt.Println(Session.ID)
+		currTime := time.Now()
+		Session.Expire = currTime.Local()
+		Session.Expire.Add(time.Hour)
+
+		return false
+	} else {
+		fmt.Println("found cookki")
+		tmpSession := UserSession{UID: 0}
+		loggedIn := Database.QueryRow("select user_id from sessions where session_id=?", cookieSession).Scan(&tmpSession.UID)
+		if loggedIn != nil {
+			return false
+		} else {
+			if tmpSession.UID == 0 {
+				return false
+			} else {
+
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func ServiceConnect(w http.ResponseWriter, r *http.Request) {
+	code := r.FormValue("code")
+	fmt.Println(code)
+}
+
+func redirectNonSecure(w http.ResponseWriter, r *http.Request) {
+	log.Println("Non-secure request initiated, redirecting.")
+	redirectURL := SSLprotocol + serverName + SSLport + r.RequestURI
+	http.Redirect(w, r, redirectURL, http.StatusMovedPermanently)
+}
+
+func ValidateUserRequest(cKey string, cToken string) string {
+	var UID string
+	var aUID string
+	var appUID string
+	Database.QueryRow("SELECT at.user_id,at.application_user_id,ac.user_id as appuser from api_tokens at left join api_credentials ac on ac.user_id=at.application_user_id where api_token_key=?", cToken).Scan(&UID, &aUID, &appUID)
+
+	return appUID
+}
+
+func ErrorMessages(err int64) (int, int, string) {
+	errorMessage := ""
+	statusCode := 200
+	errorCode := 0
+	switch err {
+	case 1062:
+		errorMessage = http.StatusText(409)
+		errorCode = 10
+		statusCode = http.StatusConflict
+	default:
+		errorMessage = http.StatusText(int(err))
+		errorCode = 0
+		statusCode = int(err)
+	}
+
+	return errorCode, statusCode, errorMessage
+
+}
 
 func GetFormat(r *http.Request) {
 
@@ -58,83 +209,6 @@ func SetFormat(data interface{}) []byte {
 	return apiOutput
 }
 
-func ErrorMessages(err int64) (int, int, string) {
-	errorMessage := ""
-	statusCode := 200
-	errorCode := 0
-	switch err {
-	case 1062:
-		errorMessage = http.StatusText(409)
-		errorCode = 10
-		statusCode = http.StatusConflict
-	default:
-		errorMessage = http.StatusText(int(err))
-		errorCode = 0
-		statusCode = int(err)
-	}
-
-	return errorCode, statusCode, errorMessage
-}
-
-type Users struct {
-	Users []User `json:"users"`
-}
-
-type User struct {
-	ID    int    "json:id"
-	Name  string "json:username"
-	Email string "json:email"
-	First string "json:first"
-	Last  string "json:last"
-}
-
-var PermittedDomains []string
-
-type DocMethod interface {
-}
-
-func Init(allowedDomains []string) {
-	/*for _, domain := range allowedDomains {
-		PermittedDomains = append(PermittedDomains, domain)
-	}*/
-	Routes = mux.NewRouter()
-	Routes.HandleFunc("/api/users", UserCreate).Methods("POST")
-	Routes.HandleFunc("/api/users", UsersRetrieve).Methods("GET")
-	Routes.HandleFunc("/api/users/{id:[0-9]+}", UsersUpdate).Methods("PUT")
-	Routes.HandleFunc("/api/users", UsersInfo).Methods("OPTIONS")
-}
-
-func UsersInfo(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Allow", "DELETE,GET,HEAD,OPTIONS,POST,PUT")
-
-	UserDocumentation := []DocMethod{}
-	UserDocumentation = append(UserDocumentation, Documentation.UserPOST)
-	UserDocumentation = append(UserDocumentation, Documentation.UserOPTIONS)
-
-	output := SetFormat(UserDocumentation)
-	fmt.Fprintln(w, string(output))
-}
-
-type CreateResponse struct {
-	Error     string "json:error"
-	ErrorCode int    "json:code"
-}
-
-type UpdateResponse struct {
-	Error     string "json:error"
-	ErrorCode int    "json:code"
-}
-
-func secureRequest(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintln(w, "You have arrived at port 443, but you are not yet secure")
-}
-
-func redirectNonSecure(w http.ResponseWriter, r *http.Request) {
-	log.Println("Non-secure request initiated, redirecting.")
-	redirectURL := SSLprotocol + serverName + r.RequestURI
-	http.Redirect(w, r, redirectURL, http.StatusMovedPermanently)
-}
-
 func dbErrorParse(err string) (string, int64) {
 	Parts := strings.Split(err, ":")
 	errorMessage := Parts[1]
@@ -143,103 +217,17 @@ func dbErrorParse(err string) (string, int64) {
 	return errorMessage, errorCode
 }
 
-func UserCreate(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "http://localhost:9000")
-	NewUser := User{}
-	NewUser.Name = r.FormValue("user")
-	NewUser.Email = r.FormValue("email")
-	NewUser.First = r.FormValue("first")
-	NewUser.Last = r.FormValue("last")
-
-	output, err := json.Marshal(NewUser)
-	fmt.Println(string(output))
-	if err != nil {
-		fmt.Println("Something went wrong!")
-	}
-
-	Response := CreateResponse{}
-	// Note: This represents a SQL injection vulnerability ... keep reading!
-	sql := "INSERT INTO users set user_nickname='" + NewUser.Name + "', user_first='" + NewUser.First + "', user_last='" + NewUser.Last + "', user_email='" + NewUser.Email + "'"
-	q, err := Database.Exec(sql)
-	if err != nil {
-		errorMessage, errorCode := dbErrorParse(err.Error())
-		fmt.Println(errorMessage)
-		error, httpCode, msg := ErrorMessages(errorCode)
-		Response.Error = msg
-		Response.ErrorCode = error
-		http.Error(w, "Conflict", httpCode)
-	}
-	fmt.Println(q)
-	createOutput, _ := json.Marshal(Response)
-	fmt.Fprintln(w, string(createOutput))
+type DocMethod interface {
 }
 
-func UsersRetrieve(w http.ResponseWriter, r *http.Request) {
-	log.Println("Starting retrieval")
-	GetFormat(r)
-	start := 0
-	limit := 10
-
-	next := start + limit
-
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Link", "<http://localhost:8080/api/users?start="+string(next)+"; rel=\"next\"")
-
-	rows, _ := Database.Query("select user_id, user_nickname, user_first, user_last, user_email from users LIMIT 10")
-	Response := Users{}
-
-	for rows.Next() {
-		user := User{}
-		rows.Scan(&user.ID, &user.Name, &user.First, &user.Last, &user.Email)
-		fmt.Println(user)
-		Response.Users = append(Response.Users, user)
-	}
-
-	output := SetFormat(Response)
-	fmt.Fprintln(w, string(output))
-}
-
-func UsersUpdate(w http.ResponseWriter, r *http.Request) {
-	Response := UpdateResponse{}
-	params := mux.Vars(r)
-	uid := params["id"]
-	email := r.FormValue("email")
-
-	var userCount int
-
-	err := Database.QueryRow("SELECT count(user_id) from users where user_id=?", uid).Scan(&userCount)
-	if userCount == 0 {
-		error, httpCode, msg := ErrorMessages(404)
-		log.Println(error)
-		log.Println(w, msg, httpCode)
-		Response.Error = msg
-		Response.ErrorCode = httpCode
-		http.Error(w, msg, httpCode)
-
-	} else if err != nil {
-
-	} else {
-		_, uperr := Database.Exec("UPDATE users set user_email=? where user_id=?", email, uid)
-		if uperr != nil {
-			_, errorCode := dbErrorParse(uperr.Error())
-			_, httpCode, msg := ErrorMessages(errorCode)
-
-			Response.Error = msg
-			Response.ErrorCode = httpCode
-			http.Error(w, msg, httpCode)
-		} else {
-			Response.Error = "success"
-			Response.ErrorCode = 0
-			output := SetFormat(Response)
-			fmt.Fprintln(w, string(output))
-		}
-	}
+func CheckToken(token string) bool {
+	return true
 }
 
 func StartServer() {
-	/*OauthServices.InitServices()
+	//OauthServices.InitServices()
 	fmt.Println(Password.GenerateSalt(22))
-	fmt.Println(Password.GenerateSalt(41))*/
+	fmt.Println(Password.GenerateSalt(41))
 
 	db, err := sql.Open("mysql", "root:Almera103@/social_network")
 	if err != nil {
@@ -248,6 +236,16 @@ func StartServer() {
 	Database = db
 
 	wg := sync.WaitGroup{}
+
+	// Check if the cert files are available.
+	hs_err := httpscerts.Check("cert.pem", "key.pem")
+	// If they are not available, generate new ones.
+	if hs_err != nil {
+		hs_err = httpscerts.Generate("cert.pem", "key.pem", "127.0.0.1:8081")
+		if hs_err != nil {
+			log.Fatal("Error: Couldn't create https certs.")
+		}
+	}
 
 	log.Println("Starting redirection server, try to access @ http:")
 
@@ -258,16 +256,10 @@ func StartServer() {
 	}()
 	wg.Add(1)
 	go func() {
-		http.ListenAndServeTLS(SSLport, "cert.pem", "key.pem",
-			http.HandlerFunc(secureRequest))
+		http.ListenAndServeTLS(SSLport, "cert.pem", "key.pem", Routes)
 		//http.ListenAndServe(SSLport,http.HandlerFunc(secureRequest))
 		wg.Done()
 	}()
 
 	wg.Wait()
-}
-
-func main() {
-	/*http.Handle("/", Routes)
-	http.ListenAndServe(":8080", nil)*/
 }
